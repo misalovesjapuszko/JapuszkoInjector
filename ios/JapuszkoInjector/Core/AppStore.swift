@@ -169,13 +169,15 @@ final class AppStore {
     func answerAppIdLimit(reuse: String?) {
         guard let p = appIdLimit else { return }
         appIdLimit = nil
-        core.respond(p.prompt, ["reuse": reuse ?? NSNull()])
+        let value: Any = reuse.map { $0 as Any } ?? NSNull()
+        core.respond(p.prompt, ["reuse": value])
     }
 
     func answerMaxCerts(revoke: [String]?) {
         guard let p = maxCerts else { return }
         maxCerts = nil
-        core.respond(p.prompt, ["revoke": revoke ?? NSNull()])
+        let value: Any = revoke.map { $0 as Any } ?? NSNull()
+        core.respond(p.prompt, ["revoke": value])
     }
 
     func answerSlots(replace: String? = nil, account: String? = nil, runInside: Bool = false) {
