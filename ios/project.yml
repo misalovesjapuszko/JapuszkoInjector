@@ -1,0 +1,49 @@
+name: JapuszkoInjector
+options:
+  bundleIdPrefix: com.japuszko
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    IPHONEOS_DEPLOYMENT_TARGET: "17.0"
+targets:
+  JapuszkoInjector:
+    type: application
+    platform: iOS
+    sources:
+      - path: JapuszkoInjector
+        excludes:
+          - Info.plist
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.japuszko.injector
+        PRODUCT_NAME: JapuszkoInjector
+        MARKETING_VERSION: 0.1.0
+        CURRENT_PROJECT_VERSION: 1
+        INFOPLIST_FILE: JapuszkoInjector/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+        SWIFT_OBJC_BRIDGING_HEADER: JapuszkoInjector/Bridge/BridgingHeader.h
+        HEADER_SEARCH_PATHS: $(SRCROOT)/JapuszkoInjector/Bridge
+        # libjinject_core.a is built by cargo before xcodebuild (see workflow)
+        LIBRARY_SEARCH_PATHS: $(SRCROOT)/../target/aarch64-apple-ios/release
+        OTHER_LDFLAGS:
+          - -ljinject_core
+          - -lresolv
+        TARGETED_DEVICE_FAMILY: "1,2"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        SUPPORTS_MACCATALYST: NO
+        SUPPORTED_PLATFORMS: iphoneos
+        DEAD_CODE_STRIPPING: YES
+        ENABLE_BITCODE: NO
+        CODE_SIGNING_ALLOWED: NO
+        CODE_SIGNING_REQUIRED: NO
+        CODE_SIGN_IDENTITY: ""
+    dependencies:
+      - sdk: Security.framework
+      - sdk: SystemConfiguration.framework
+      - sdk: CoreFoundation.framework
+      - sdk: BackgroundTasks.framework
+      - sdk: AppIntents.framework

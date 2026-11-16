@@ -1,0 +1,15 @@
+[package]
+name = "jinject"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+jinject-core = { path = "../core" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+clap = { version = "4", features = ["derive"] }
+rpassword = "7"
+serde_json = "1"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+isideload = { version = "0.5.2", default-features = false, features = ["install", "fs-storage", "tokio-mt"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt"] }

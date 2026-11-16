@@ -1,0 +1,101 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  ios:
+    runs-on: macos-15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup target add aarch64-apple-ios
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ios
+
+      - name: Build core (aarch64-apple-ios)
+        env:
+          IPHONEOS_DEPLOYMENT_TARGET: "17.0"
+        run: |
+          cargo build --release -p jinject-core --target aarch64-apple-ios
+          ls -lh target/aarch64-apple-ios/release/libjinject_core.a
+
+      - name: Generate Xcode project
+        run: |
+          brew install xcodegen
+          cd ios && xcodegen generate
+
+      - name: Build app (unsigned)
+        run: |
+          cd ios
+          set -o pipefail
+          xcodebuild build \
+            -project JapuszkoInjector.xcodeproj \
+            -scheme JapuszkoInjector \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath DerivedData \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO \
+            2>&1 | tee build.log | grep -E "error:|warning: |BUILD (SUCCEEDED|FAILED)" || true
+          grep -q "BUILD SUCCEEDED" build.log
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xcodebuild-log
+          path: ios/build.log
+
+      - name: Package .ipa
+        run: |
+          cd ios
+          mkdir -p Payload
+          cp -R DerivedData/Build/Products/Release-iphoneos/JapuszkoInjector.app Payload/
+          zip -qry JapuszkoInjector.ipa Payload
+          ls -lh JapuszkoInjector.ipa
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: JapuszkoInjector-ipa
+          path: ios/JapuszkoInjector.ipa
+
+      - name: Refresh 'latest' release
+        if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release delete latest --yes --cleanup-tag 2>/dev/null || true
+          gh release create latest ios/JapuszkoInjector.ipa \
+            --title "Latest build" \
+            --notes "Unsigned. Install with: jinject bootstrap JapuszkoInjector.ipa -e you@icloud.com (build ${{ github.sha }})"
+
+  linux-cli:
+    runs-on: ubuntu-latest
+    needs: ios
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: linux
+      - name: Build jinject
+        run: cargo build --release -p jinject
+      - name: Attach to release
+        if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cp target/release/jinject jinject-linux-x86_64
+          gh release upload latest jinject-linux-x86_64 --clobber

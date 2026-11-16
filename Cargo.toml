@@ -1,0 +1,10 @@
+[workspace]
+resolver = "2"
+members = ["core", "cli"]
+
+# Signing hashes every file of an app on the phone, so optimise for speed.
+# No `strip`: the iOS staticlib must keep its symbols for the Xcode link.
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1

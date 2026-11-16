@@ -1,0 +1,11 @@
+/target
+ios/JapuszkoInjector.xcodeproj
+ios/DerivedData
+ios/Payload
+ios/*.ipa
+ios/build.log
+*.p12
+*.mobiledevicepairing
+pairing.plist
+.DS_Store
+HANDOFF.md
