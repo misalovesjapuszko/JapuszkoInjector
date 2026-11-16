@@ -1714,6 +1714,7 @@ dependencies = [
  "plist",
  "rand 0.8.8",
  "rcgen",
+ "reqwest",
  "rootcause",
  "rsa",
  "rustls",

@@ -116,6 +116,18 @@ struct Inspected: Codable, Equatable {
     var icon: String?
 }
 
+struct NetStep: Codable, Identifiable, Equatable {
+    var step: String
+    var ok: Bool
+    var detail: String
+    var id: String { step }
+}
+
+struct NetTestResult: Codable, Equatable {
+    var server: String
+    var steps: [NetStep]
+}
+
 struct CoreConfig: Codable, Equatable {
     struct Target: Codable, Equatable {
         var kind: String = "network"

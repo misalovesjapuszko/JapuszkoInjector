@@ -592,6 +592,10 @@ final class AppStore {
         } ?? []
     }
 
+    func netTest() async -> NetTestResult? {
+        try? await core.call(["op": "net_test"], as: NetTestResult.self)
+    }
+
     func saveConfig() {
         do {
             try core.sync(["op": "set_config", "config": Core.object(config)])

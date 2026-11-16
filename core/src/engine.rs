@@ -79,7 +79,39 @@ pub struct Engine {
 }
 
 fn rep(r: Report) -> String {
-    format!("{r}")
+    clean_report(&format!("{r}"))
+}
+
+/// rootcause prints a tree with source paths; keep just the messages.
+/// "● Failed to log in ├ /path ● error sending request" → "Failed to log in: error sending request"
+pub fn clean_report(raw: &str) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    for line in raw.lines() {
+        let t = line.trim().trim_start_matches(['│', '├', '╰', '|', ' ']).trim();
+        if t.is_empty() || t.starts_with('/') || t.contains(".rs:") {
+            continue;
+        }
+        let t = t.trim_start_matches('●').trim();
+        if !t.is_empty() && !parts.iter().any(|p| p == t) {
+            parts.push(t.to_string());
+        }
+    }
+    if parts.is_empty() { raw.trim().to_string() } else { parts.join(": ") }
+}
+
+/// Walk an error's source chain into one line.
+fn chain(e: &(dyn std::error::Error + 'static)) -> String {
+    let mut out = e.to_string();
+    let mut cur = e.source();
+    while let Some(s) = cur {
+        let m = s.to_string();
+        if !out.contains(&m) {
+            out.push_str(": ");
+            out.push_str(&m);
+        }
+        cur = s.source();
+    }
+    out
 }
 
 fn unix(d: &plist::Date) -> i64 {
@@ -245,11 +277,13 @@ impl Engine {
     pub async fn login(&self, email: &str, password: &str) -> Result<AccountInfo, String> {
         let cfg = self.config();
         let mut last_err = String::from("No anisette servers configured");
-        let servers = if cfg.anisette_servers.is_empty() {
-            vec![DEFAULT_ANISETTE.to_string()]
-        } else {
-            cfg.anisette_servers.clone()
-        };
+        // The user's list first, then the built-in fallbacks.
+        let mut servers = cfg.anisette_servers.clone();
+        for f in FALLBACK_ANISETTE {
+            if !servers.iter().any(|s| s.trim_end_matches('/') == *f) {
+                servers.push(f.to_string());
+            }
+        }
 
         for (i, url) in servers.iter().enumerate() {
             tracing::info!("Signing in as {email} (anisette: {url})");
@@ -979,6 +1013,63 @@ impl Engine {
         })
     }
 
+    // ---------- diagnostics ----------
+
+    /// Checks DNS, TCP and HTTPS to the first anisette server separately, so
+    /// a failed sign-in can be pinned to one layer.
+    pub async fn net_test(&self) -> Json {
+        let cfg = self.config();
+        let url = cfg
+            .anisette_servers
+            .first()
+            .cloned()
+            .unwrap_or_else(|| DEFAULT_ANISETTE.to_string());
+        let host = url
+            .trim_start_matches("https://")
+            .trim_start_matches("http://")
+            .split('/')
+            .next()
+            .unwrap_or("")
+            .to_string();
+        let mut steps: Vec<Json> = Vec::new();
+        let timeout = std::time::Duration::from_secs(8);
+
+        let addrs: Vec<std::net::SocketAddr> =
+            match tokio::time::timeout(timeout, tokio::net::lookup_host((host.as_str(), 443))).await {
+                Ok(Ok(a)) => a.collect(),
+                Ok(Err(e)) => {
+                    steps.push(json!({"step": "DNS", "ok": false, "detail": e.to_string()}));
+                    vec![]
+                }
+                Err(_) => {
+                    steps.push(json!({"step": "DNS", "ok": false, "detail": "timed out"}));
+                    vec![]
+                }
+            };
+        if !addrs.is_empty() {
+            let list: Vec<String> = addrs.iter().map(|a| a.ip().to_string()).collect();
+            steps.push(json!({"step": "DNS", "ok": true, "detail": list.join(", ")}));
+            let tcp = match tokio::time::timeout(timeout, tokio::net::TcpStream::connect(addrs[0])).await {
+                Ok(Ok(_)) => json!({"step": "TCP", "ok": true, "detail": format!("connected to {}", addrs[0])}),
+                Ok(Err(e)) => json!({"step": "TCP", "ok": false, "detail": e.to_string()}),
+                Err(_) => json!({"step": "TCP", "ok": false, "detail": "timed out"}),
+            };
+            steps.push(tcp);
+        }
+
+        let target = format!("{}/v3/client_info", url.trim_end_matches('/'));
+        let https = match reqwest::Client::builder().timeout(timeout).build() {
+            Err(e) => json!({"step": "HTTPS", "ok": false, "detail": format!("client: {}", chain(&e))}),
+            Ok(c) => match c.get(&target).send().await {
+                Ok(r) => json!({"step": "HTTPS", "ok": r.status().is_success(), "detail": format!("HTTP {}", r.status())}),
+                Err(e) => json!({"step": "HTTPS", "ok": false, "detail": chain(&e)}),
+            },
+        };
+        steps.push(https);
+        tracing::info!("Network test for {url}: {}", Json::Array(steps.clone()));
+        json!({ "server": url, "steps": steps })
+    }
+
     // ---------- device ----------
 
     pub async fn check_device(&self) -> Result<DeviceInfo, String> {
@@ -1058,7 +1149,7 @@ fn explain_auth(err: &str) -> String {
         "Wrong Apple ID or password.".into()
     } else if l.contains("anisette") || l.contains("websocket") {
         format!(
-            "The anisette server failed. Add another one (or your own) in Lab → Anisette. ({err})"
+            "Couldn't reach an anisette server. Check the internet connection, run Settings → Advanced → Network Test, or add another server under Anisette Servers. Details: {err}"
         )
     } else {
         err.into()
@@ -1073,5 +1164,17 @@ fn explain_portal(err: &str) -> String {
         format!("{err} Revoke an old certificate in Lab → Certificates.")
     } else {
         err.into()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn cleans_rootcause_tree() {
+        let raw = "Failed to get anisette client info\n├ /Users/runner/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/isideload-0.5.2/src/auth/apple_account.rs:164\n│\n● Failed to request /v3/client_info from anisette server\n├ /Users/runner/x/isideload-0.5.2/src/anisette/remote_v3/mod.rs:141\n│\n● error sending request for url (https://ani.iloader.app/v3/client_info)\n╰ /Users/runner/x/remote_v3/mod.rs:141";
+        assert_eq!(
+            super::clean_report(raw),
+            "Failed to get anisette client info: Failed to request /v3/client_info from anisette server: error sending request for url (https://ani.iloader.app/v3/client_info)"
+        );
     }
 }

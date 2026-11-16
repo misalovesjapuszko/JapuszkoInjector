@@ -97,6 +97,7 @@ struct SettingsView: View {
                 }
 
                 Section("Advanced") {
+                    NavigationLink("Network Test") { NetworkTestView() }
                     NavigationLink("Anisette Servers") { AnisetteView() }
                     NavigationLink("Apps on This Device") { DeviceAppsView() }
                     NavigationLink("Logs") { LogView() }
@@ -474,5 +475,45 @@ struct LogView: View {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("JapuszkoInjector-log.txt")
         try? text.write(to: url, atomically: true, encoding: .utf8)
         share = ShareItems(urls: [url])
+    }
+}
+
+struct NetworkTestView: View {
+    @Environment(AppStore.self) private var store
+    @State private var result: NetTestResult?
+    @State private var running = false
+
+    var body: some View {
+        List {
+            Section {
+                Button(running ? "Testing…" : "Run Test") { run() }.disabled(running)
+            } footer: {
+                Text("Checks the connection to the first anisette server: name lookup, connection, then a secure request.")
+            }
+            if let result {
+                Section(result.server) {
+                    ForEach(result.steps) { s in
+                        HStack(alignment: .top, spacing: 10) {
+                            Image(systemName: s.ok ? "checkmark.circle.fill" : "xmark.circle.fill")
+                                .foregroundStyle(s.ok ? .green : .red)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(s.step).font(.headline)
+                                Text(s.detail).font(.footnote).foregroundStyle(.secondary).textSelection(.enabled)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .navigationTitle("Network Test")
+        .task { if result == nil { run() } }
+    }
+
+    private func run() {
+        running = true
+        Task {
+            result = await store.netTest()
+            running = false
+        }
     }
 }

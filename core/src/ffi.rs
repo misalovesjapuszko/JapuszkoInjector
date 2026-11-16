@@ -227,6 +227,7 @@ pub async fn dispatch(e: &Engine, op: u64, req: &Json) -> Result<Json, String> {
             )
             .await?),
         "check_device" => to(e.check_device().await?),
+        "net_test" => Ok(e.net_test().await),
         "guest_add" => to(e
             .guest_add(
                 op,
