@@ -8,32 +8,68 @@ struct PromptHost: ViewModifier {
     @Environment(AppStore.self) private var store
     let depth: Int
 
-    private func gate<T>(_ value: T?) -> T? {
-        store.modalDepth == depth ? value : nil
+    private var active: Bool { store.modalDepth == depth }
+
+    private var twoFactor: Binding<TwoFactorPrompt?> {
+        Binding(get: { active ? store.twoFactor : nil }, set: { _ in })
+    }
+    private var appIdLimit: Binding<AppIdLimitPrompt?> {
+        Binding(get: { active ? store.appIdLimit : nil }, set: { _ in })
+    }
+    private var slotsFull: Binding<SlotsPrompt?> {
+        Binding(get: { active ? store.slotsFull : nil }, set: { _ in })
+    }
+    private var maxCerts: Binding<MaxCertsPrompt?> {
+        Binding(get: { active ? store.maxCerts : nil }, set: { _ in })
+    }
+    private var showError: Binding<Bool> {
+        Binding(get: { active && store.errorAlert != nil },
+                set: { if !$0 { store.errorAlert = nil } })
     }
 
     func body(content: Content) -> some View {
         content
-            .sheet(item: Binding(get: { gate(store.twoFactor) }, set: { _ in })) { p in
+            .modifier(SheetPrompts(twoFactor: twoFactor, appIdLimit: appIdLimit,
+                                   slotsFull: slotsFull, maxCerts: maxCerts))
+            .modifier(ErrorAlert(isPresented: showError, item: store.errorAlert))
+    }
+}
+
+private struct SheetPrompts: ViewModifier {
+    let twoFactor: Binding<TwoFactorPrompt?>
+    let appIdLimit: Binding<AppIdLimitPrompt?>
+    let slotsFull: Binding<SlotsPrompt?>
+    let maxCerts: Binding<MaxCertsPrompt?>
+
+    func body(content: Content) -> some View {
+        let first = content
+            .sheet(item: twoFactor) { (p: TwoFactorPrompt) in
                 TwoFactorSheet(prompt: p).interactiveDismissDisabled()
             }
-            .sheet(item: Binding(get: { gate(store.appIdLimit) }, set: { _ in })) { p in
+            .sheet(item: appIdLimit) { (p: AppIdLimitPrompt) in
                 AppIdLimitSheet(prompt: p).interactiveDismissDisabled()
             }
-            .sheet(item: Binding(get: { gate(store.slotsFull) }, set: { _ in })) { p in
+        return first
+            .sheet(item: slotsFull) { (p: SlotsPrompt) in
                 SlotsFullSheet(prompt: p).interactiveDismissDisabled()
             }
-            .sheet(item: Binding(get: { gate(store.maxCerts) }, set: { _ in })) { p in
+            .sheet(item: maxCerts) { (p: MaxCertsPrompt) in
                 MaxCertsSheet(prompt: p).interactiveDismissDisabled()
             }
-            .alert(gate(store.errorAlert)?.title ?? "",
-                   isPresented: Binding(get: { gate(store.errorAlert) != nil },
-                                        set: { if !$0 { store.errorAlert = nil } }),
-                   presenting: gate(store.errorAlert)) { _ in
-                Button("OK", role: .cancel) { store.errorAlert = nil }
-            } message: { item in
-                Text(item.message)
-            }
+    }
+}
+
+private struct ErrorAlert: ViewModifier {
+    @Environment(AppStore.self) private var store
+    let isPresented: Binding<Bool>
+    let item: AlertItem?
+
+    func body(content: Content) -> some View {
+        content.alert(item?.title ?? "Error", isPresented: isPresented) {
+            Button("OK", role: .cancel) { store.errorAlert = nil }
+        } message: {
+            Text(item?.message ?? "")
+        }
     }
 }
 
