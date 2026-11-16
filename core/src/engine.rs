@@ -173,6 +173,63 @@ impl Engine {
         self.root.join("apps").join(sanitize(id))
     }
 
+    // ---------- session persistence ----------
+
+    fn session_path(&self, email: &str) -> PathBuf {
+        self.root
+            .join("sessions")
+            .join(format!("{}.plist", sanitize(&email.to_lowercase())))
+    }
+
+    /// Save the authenticated session to disk so the next launch can skip a
+    /// full login (no password, no 2FA).
+    fn save_session(
+        &self,
+        email: &str,
+        first_name: &str,
+        last_name: &str,
+        spd: &plist::Dictionary,
+    ) {
+        let dir = self.root.join("sessions");
+        if std::fs::create_dir_all(&dir).is_err() {
+            return;
+        }
+        let mut wrapper = plist::Dictionary::new();
+        wrapper.insert(
+            "first_name".into(),
+            plist::Value::String(first_name.to_string()),
+        );
+        wrapper.insert(
+            "last_name".into(),
+            plist::Value::String(last_name.to_string()),
+        );
+        wrapper.insert("spd".into(), plist::Value::Dictionary(spd.clone()));
+        let _ = plist::to_file_xml(self.session_path(email), &wrapper);
+    }
+
+    /// Load a previously saved session (SPD + name).
+    fn load_saved_session(
+        &self,
+        email: &str,
+    ) -> Option<(String, String, plist::Dictionary)> {
+        let path = self.session_path(email);
+        let wrapper: plist::Dictionary = plist::from_file(path).ok()?;
+        let first = wrapper
+            .get("first_name")?
+            .as_string()?
+            .to_string();
+        let last = wrapper
+            .get("last_name")?
+            .as_string()?
+            .to_string();
+        let spd = wrapper.get("spd")?.as_dictionary()?.clone();
+        Some((first, last, spd))
+    }
+
+    fn delete_saved_session(&self, email: &str) {
+        let _ = std::fs::remove_file(self.session_path(email));
+    }
+
     pub fn config(&self) -> Config {
         std::fs::read(self.root.join("config.json"))
             .ok()
@@ -214,6 +271,7 @@ impl Engine {
 
     pub async fn logout(&self, email: &str) {
         self.sessions.lock().await.remove(&email.to_lowercase());
+        self.delete_saved_session(email);
     }
 
     fn two_factor_cb(
@@ -285,6 +343,12 @@ impl Engine {
             }
         }
 
+        // Try restoring a saved session first (skips the password and 2FA).
+        if let Some(info) = self.try_restore(email, &servers).await {
+            return Ok(info);
+        }
+
+        // Fall back to a fresh login.
         for (i, url) in servers.iter().enumerate() {
             tracing::info!("Signing in as {email} (anisette: {url})");
             let provider = RemoteV3AnisetteProvider::new(
@@ -301,12 +365,7 @@ impl Engine {
                 Ok(account) => return self.finish_login(email, account).await,
                 Err(e) => {
                     last_err = rep(e);
-                    let l = last_err.to_lowercase();
-                    let anisette_problem = l.contains("anisette")
-                        || l.contains("websocket")
-                        || l.contains("error sending request")
-                        || l.contains("dns");
-                    if anisette_problem && i + 1 < servers.len() {
+                    if is_anisette_error(&last_err) && i + 1 < servers.len() {
                         tracing::warn!("Anisette server {url} failed, trying the next one");
                         continue;
                     }
@@ -315,6 +374,69 @@ impl Engine {
             }
         }
         Err(explain_auth(&last_err))
+    }
+
+    /// Try to restore a previously saved Apple ID session without sending the
+    /// password or requiring 2FA.  Returns `None` when there is no saved
+    /// session or when the saved session has expired.
+    async fn try_restore(
+        &self,
+        email: &str,
+        servers: &[String],
+    ) -> Option<AccountInfo> {
+        let (_, _, spd) = self.load_saved_session(email)?;
+        tracing::info!("Attempting session restore for {email}");
+
+        for url in servers {
+            let provider = match RemoteV3AnisetteProvider::new(
+                url,
+                Box::new(FsStorage::new(self.storage_dir())),
+                "0".into(),
+            ) {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+            let mut account = match AppleAccount::builder(email)
+                .anisette_provider(provider)
+                .build()
+                .await
+            {
+                Ok(a) => a,
+                Err(e) => {
+                    let msg = rep(e);
+                    if is_anisette_error(&msg) {
+                        tracing::warn!(
+                            "Session restore: anisette {url} failed, trying the next one"
+                        );
+                        continue;
+                    }
+                    break;
+                }
+            };
+            account.spd = Some(spd.clone());
+
+            match self.finish_login(email, account).await {
+                Ok(info) => {
+                    tracing::info!("Restored session for {email}");
+                    return Some(info);
+                }
+                Err(e) => {
+                    if is_anisette_error(&e) {
+                        tracing::warn!(
+                            "Session restore: anisette {url} failed, trying the next one"
+                        );
+                        continue;
+                    }
+                    // Auth/token error — the session has expired.
+                    tracing::info!("Saved session for {email} expired: {e}");
+                    break;
+                }
+            }
+        }
+
+        // Restore failed; delete the stale session file.
+        self.delete_saved_session(email);
+        None
     }
 
     async fn finish_login(
@@ -326,6 +448,10 @@ impl Engine {
         let dev = DeveloperSession::from_account(&mut account)
             .await
             .map_err(rep)?;
+        // Persist the session so the next app launch can skip the password/2FA.
+        if let Some(spd) = &account.spd {
+            self.save_session(email, &first, &last, spd);
+        }
         let cfg = self.config();
         let mut loader: Loader = SideloaderBuilder::new(dev, email.to_string())
             .team_selection(TeamSelection::First)
@@ -1141,6 +1267,14 @@ fn sanitize(id: &str) -> String {
     id.chars()
         .map(|c| if c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_' { c } else { '_' })
         .collect()
+}
+
+fn is_anisette_error(msg: &str) -> bool {
+    let l = msg.to_lowercase();
+    l.contains("anisette")
+        || l.contains("websocket")
+        || l.contains("error sending request")
+        || l.contains("dns")
 }
 
 fn explain_auth(err: &str) -> String {

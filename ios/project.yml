@@ -25,7 +25,10 @@ targets:
         INFOPLIST_FILE: JapuszkoInjector/Info.plist
         GENERATE_INFOPLIST_FILE: NO
         SWIFT_OBJC_BRIDGING_HEADER: JapuszkoInjector/Bridge/BridgingHeader.h
-        HEADER_SEARCH_PATHS: $(SRCROOT)/JapuszkoInjector/Bridge
+        CODE_SIGN_ENTITLEMENTS: JapuszkoInjector/JapuszkoInjector.entitlements
+        HEADER_SEARCH_PATHS:
+          - $(SRCROOT)/JapuszkoInjector/Bridge
+          - $(SRCROOT)/JapuszkoInjector/Exploit
         # libjinject_core.a is built by cargo before xcodebuild (see workflow)
         LIBRARY_SEARCH_PATHS: $(SRCROOT)/../target/aarch64-apple-ios/release
         OTHER_LDFLAGS:
@@ -47,3 +50,4 @@ targets:
       - sdk: CoreFoundation.framework
       - sdk: BackgroundTasks.framework
       - sdk: AppIntents.framework
+      - sdk: libsqlite3.tbd

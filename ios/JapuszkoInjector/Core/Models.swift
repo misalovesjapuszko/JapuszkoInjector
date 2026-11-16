@@ -134,7 +134,11 @@ struct CoreConfig: Codable, Equatable {
         var ip: String? = "10.7.0.1"
         var udid: String? = nil
     }
-    var anisetteServers: [String] = ["https://ani.iloader.app"]
+    var anisetteServers: [String] = [
+        "https://ani.iloader.app",
+        "https://ani.sidestore.io",
+        "https://anisette.sideloadly.io",
+    ]
     var machineName: String = "JapuszkoInjector"
     var target = Target()
     var autoRevokeCerts = false

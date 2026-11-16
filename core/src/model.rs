@@ -5,7 +5,11 @@ use serde::{Deserialize, Serialize};
 pub const SELF_ID: &str = "__self__";
 pub const DEFAULT_ANISETTE: &str = "https://ani.iloader.app";
 /// Always tried after the user's own list.
-pub const FALLBACK_ANISETTE: &[&str] = &["https://ani.iloader.app", "https://ani.sidestore.io"];
+pub const FALLBACK_ANISETTE: &[&str] = &[
+    "https://ani.iloader.app",
+    "https://ani.sidestore.io",
+    "https://anisette.sideloadly.io",
+];
 /// LocalDevVPN / StosVPN loop the device back to itself on this address.
 pub const DEFAULT_LOOPBACK_IP: &str = "10.7.0.1";
 
