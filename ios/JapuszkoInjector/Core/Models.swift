@@ -2,7 +2,7 @@ import Foundation
 
 // Mirrors core/src/model.rs. JSON is snake_case on the Rust side.
 
-struct InstallOptions: Codable, Equatable {
+struct InstallOptions: Codable, Hashable {
     var customName: String? = nil
     var customBundleId: String? = nil
     var stripExtensions = false
@@ -11,7 +11,7 @@ struct InstallOptions: Codable, Equatable {
     var stripDeviceRestrictions = false
 }
 
-struct AppRecord: Codable, Identifiable, Equatable {
+struct AppRecord: Codable, Identifiable, Hashable {
     var id: String
     var name: String
     var version: String
@@ -31,7 +31,7 @@ struct AppRecord: Codable, Identifiable, Equatable {
 }
 
 /// A "Run inside" app living in the injector's container.
-struct GuestRecord: Codable, Identifiable, Equatable {
+struct GuestRecord: Codable, Identifiable, Hashable {
     var id: String
     var name: String
     var version: String
@@ -45,7 +45,7 @@ struct GuestRecord: Codable, Identifiable, Equatable {
     var sizeBytes: UInt64
 }
 
-struct AccountInfo: Codable, Identifiable, Equatable {
+struct AccountInfo: Codable, Identifiable, Hashable {
     var email: String
     var firstName: String
     var lastName: String
@@ -210,6 +210,15 @@ struct LogLine: Identifiable, Equatable {
 // MARK: helpers
 
 extension TimeInterval {
+    /// "Expires in 4 days", "Expires in 5 hours", "Expired"
+    var expiryText: String {
+        if self <= 0 { return "Expired" }
+        let days = Int(self) / 86400, hours = Int(self) / 3600, minutes = Int(self) / 60
+        if days >= 1 { return "Expires in \(days) day\(days == 1 ? "" : "s")" }
+        if hours >= 1 { return "Expires in \(hours) hour\(hours == 1 ? "" : "s")" }
+        return "Expires in \(max(minutes, 1)) minute\(minutes == 1 ? "" : "s")"
+    }
+
     /// "4D 13H", "5H 20M", "EXPIRED"
     var readout: String {
         if self <= 0 { return "EXPIRED" }

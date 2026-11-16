@@ -6,7 +6,6 @@ struct JapuszkoInjectorApp: App {
         WindowGroup {
             RootView()
                 .environment(AppStore.shared)
-                .preferredColorScheme(.dark)
                 .task { await AppStore.shared.launch() }
         }
         .backgroundTask(.appRefresh(BackgroundRefresh.identifier)) {

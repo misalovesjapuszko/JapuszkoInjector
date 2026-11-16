@@ -112,15 +112,21 @@ fn handle_event(engine: &Arc<Engine>, ev: Event) {
                         println!("  p{}: SMS to {}", n["id"], n["numberWithDialCode"].as_str().unwrap_or("?"));
                     }
                 }
-                let a = ask("Code (or d = send to devices, p<id> = SMS, r = resend): ");
-                let answer = if a == "d" {
-                    json!("SendToDevices")
-                } else if a == "r" {
-                    json!("ResendCode")
-                } else if let Some(id) = a.strip_prefix('p').and_then(|x| x.parse::<u32>().ok()) {
-                    json!({ "SendSms": id })
-                } else {
-                    json!({ "SubmitCode": a })
+                let only_number = if numbers.len() == 1 { numbers[0]["id"].as_u64() } else { None };
+                let answer = loop {
+                    let a = ask("Code (or d = send to devices, p<id> = SMS, r = resend): ");
+                    if a == "d" {
+                        break json!("SendToDevices");
+                    } else if a == "r" {
+                        break json!("ResendCode");
+                    } else if a == "p" && only_number.is_some() {
+                        break json!({ "SendSms": only_number.unwrap() });
+                    } else if let Some(id) = a.strip_prefix('p').and_then(|x| x.parse::<u32>().ok()) {
+                        break json!({ "SendSms": id });
+                    } else if a.len() == 6 && a.chars().all(|c| c.is_ascii_digit()) {
+                        break json!({ "SubmitCode": a });
+                    }
+                    println!("  That's not a 6-digit code or an option, try again.");
                 };
                 engine.prompts.answer(prompt, answer);
             });

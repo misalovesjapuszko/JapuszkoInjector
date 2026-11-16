@@ -13,6 +13,17 @@ struct Banner: Identifiable, Equatable {
     var text: String
 }
 
+struct AlertItem: Identifiable {
+    let id = UUID()
+    var title: String
+    var message: String
+}
+
+struct PendingInstall: Identifiable {
+    let id = UUID()
+    var url: URL
+}
+
 struct BusyState: Equatable {
     var title: String
     var stage: String = "Starting"
@@ -39,6 +50,11 @@ final class AppStore {
     // activity
     var busy: BusyState?
     var banner: Banner?
+    var errorAlert: AlertItem?
+    var pendingInstall: PendingInstall?
+    /// How many of our sheets are stacked. Prompts are presented by the
+    /// topmost one, otherwise iOS silently refuses to show them.
+    var modalDepth = 0
 
     // prompts from the core
     var twoFactor: TwoFactorPrompt?
@@ -150,6 +166,10 @@ final class AppStore {
     }
 
     func show(_ kind: Banner.Kind, _ text: String) {
+        if kind == .bad {
+            errorAlert = AlertItem(title: "Something Went Wrong", message: text)
+            return
+        }
         banner = Banner(kind: kind, text: text)
         let id = banner?.id
         Task { @MainActor in
@@ -159,6 +179,15 @@ final class AppStore {
     }
 
     // MARK: prompt answers
+
+    /// Drops every open prompt; whatever was waiting on one fails cleanly.
+    func cancelPendingPrompts() {
+        core.cancelPrompts()
+        twoFactor = nil
+        appIdLimit = nil
+        slotsFull = nil
+        maxCerts = nil
+    }
 
     func answerTwoFactor(_ answer: Any) {
         guard let p = twoFactor else { return }

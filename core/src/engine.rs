@@ -398,8 +398,9 @@ impl Engine {
         if !opts.strip_extensions {
             needed += prepared.extension_count; // rough: assumes new
         }
-        let available = ids.available_quantity.unwrap_or(i64::MAX);
-        if needed > 0 && available >= 0 && needed as i64 > available {
+        // Apple sometimes reports a negative count when the quota is used up.
+        let available = ids.available_quantity.unwrap_or(i64::MAX).max(0);
+        if needed > 0 && needed as i64 > available {
             let (pid, rx) = self.prompts.open();
             let choices: Vec<Json> = ids
                 .app_ids
