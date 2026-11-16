@@ -144,12 +144,19 @@ struct AppDataView: View {
 
 // MARK: - Container model
 
-struct AppContainer: Identifiable {
-    var id: String { path }
+struct AppContainer: Identifiable, Sendable {
+    nonisolated var id: String { path }
     let path: String
     let uuid: String
     let bundleId: String
     let displayName: String
+
+    nonisolated init(path: String, uuid: String, bundleId: String, displayName: String) {
+        self.path = path
+        self.uuid = uuid
+        self.bundleId = bundleId
+        self.displayName = displayName
+    }
 }
 
 // MARK: - Container file browser
@@ -354,8 +361,8 @@ struct AppContainerBrowser: View {
 
 // MARK: - Browser item model
 
-struct BrowserItem: Identifiable {
-    var id: String { path }
+struct BrowserItem: Identifiable, Sendable {
+    nonisolated var id: String { path }
     let path: String
     let name: String
     let isDirectory: Bool
@@ -493,8 +500,8 @@ struct SQLiteViewer: View {
     }
 }
 
-struct SQLiteTable: Identifiable {
-    var id: String { name }
+struct SQLiteTable: Identifiable, Sendable {
+    nonisolated var id: String { name }
     let name: String
     let rowCount: Int
     let columnCount: Int

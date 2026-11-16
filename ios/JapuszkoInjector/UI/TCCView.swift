@@ -377,12 +377,21 @@ struct TCCView: View {
 
 // MARK: - Data model
 
-struct TCCEntry: Identifiable {
-    var id: String { "\(service)|\(client)" }
+struct TCCEntry: Identifiable, Sendable {
+    nonisolated var id: String { "\(service)|\(client)" }
     let service: String
     let client: String
     let clientType: Int32
     var authValue: Int32
     let authReason: Int32
     let indirectObject: String?
+
+    nonisolated init(service: String, client: String, clientType: Int32, authValue: Int32, authReason: Int32, indirectObject: String?) {
+        self.service = service
+        self.client = client
+        self.clientType = clientType
+        self.authValue = authValue
+        self.authReason = authReason
+        self.indirectObject = indirectObject
+    }
 }
