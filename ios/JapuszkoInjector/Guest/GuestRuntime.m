@@ -9,6 +9,7 @@
 
 #import "GuestRuntime.h"
 
+#import <CoreFoundation/CoreFoundation.h>
 #import <Foundation/Foundation.h>
 #import <crt_externs.h>
 #import <dlfcn.h>
@@ -44,6 +45,7 @@ int jg_wait_for_jit(double seconds) {
 static NSBundle *jg_bundle;
 static NSUserDefaults *jg_defaults;
 static NSString *jg_data;
+static NSString *jg_bundleId;
 
 @interface NSBundle (JGGuest)
 + (NSBundle *)jg_mainBundle;
@@ -61,6 +63,16 @@ static NSString *jg_data;
 @implementation NSUserDefaults (JGGuest)
 + (NSUserDefaults *)jg_standardUserDefaults {
     return jg_defaults ?: [self jg_standardUserDefaults];
+}
+@end
+
+@interface NSBundle (JGGuestId)
+- (NSString *)jg_bundleIdentifier;
+@end
+@implementation NSBundle (JGGuestId)
+- (NSString *)jg_bundleIdentifier {
+    if (jg_bundleId && self == jg_bundle) return jg_bundleId;
+    return [self jg_bundleIdentifier];
 }
 @end
 
@@ -93,6 +105,7 @@ static void jg_swap_instance(Class cls, SEL a, SEL b) {
 static void jg_swap_all(void) {
     jg_swap_class([NSBundle class], @selector(mainBundle), @selector(jg_mainBundle));
     jg_swap_class([NSUserDefaults class], @selector(standardUserDefaults), @selector(jg_standardUserDefaults));
+    jg_swap_instance([NSBundle class], @selector(bundleIdentifier), @selector(jg_bundleIdentifier));
     jg_swap_instance([NSFileManager class], @selector(containerURLForSecurityApplicationGroupIdentifier:),
                      @selector(jg_containerURLForSecurityApplicationGroupIdentifier:));
 }
@@ -110,11 +123,11 @@ static void jg_restore_env(const char *k, char *v) {
 
 static int jg_fail(char *err, int errLen, int code, NSString *msg) {
     if (err && errLen > 0) { snprintf(err, (size_t)errLen, "%s", msg.UTF8String ?: "unknown error"); }
-    // Undo everything so the injector itself can start.
     jg_swap_all();
     jg_bundle = nil;
     jg_defaults = nil;
     jg_data = nil;
+    jg_bundleId = nil;
     jg_restore_env("HOME", jg_saved_home);
     jg_restore_env("CFFIXED_USER_HOME", jg_saved_fixed);
     jg_restore_env("TMPDIR", jg_saved_tmp);
@@ -124,16 +137,32 @@ static int jg_fail(char *err, int errLen, int code, NSString *msg) {
 
 static const struct mach_header_64 *jg_find_image(const char *path) {
     char want[PATH_MAX];
-    if (!realpath(path, want)) strlcpy(want, path, sizeof(want));
+    int have_real = (realpath(path, want) != NULL);
+    if (!have_real) strlcpy(want, path, sizeof(want));
+
+    const char *basename_want = strrchr(want, '/');
+    basename_want = basename_want ? basename_want + 1 : want;
+
+    const struct mach_header_64 *basename_match = NULL;
     for (uint32_t i = 0; i < _dyld_image_count(); i++) {
         const char *name = _dyld_get_image_name(i);
         if (!name) continue;
-        char got[PATH_MAX];
-        if (strcmp(name, path) == 0 || (realpath(name, got) && strcmp(got, want) == 0)) {
+        if (strcmp(name, path) == 0) {
             return (const struct mach_header_64 *)_dyld_get_image_header(i);
         }
+        char got[PATH_MAX];
+        if (have_real && realpath(name, got) && strcmp(got, want) == 0) {
+            return (const struct mach_header_64 *)_dyld_get_image_header(i);
+        }
+        if (!basename_match) {
+            const char *bn = strrchr(name, '/');
+            bn = bn ? bn + 1 : name;
+            if (strcmp(bn, basename_want) == 0) {
+                basename_match = (const struct mach_header_64 *)_dyld_get_image_header(i);
+            }
+        }
     }
-    return NULL;
+    return basename_match;
 }
 
 static uint64_t jg_entry_offset(const struct mach_header_64 *mh) {
@@ -168,6 +197,7 @@ int jg_run_guest(const char *bundlePath, const char *execName, const char *dataP
         setenv("TMPDIR", [[data stringByAppendingPathComponent:@"tmp"] stringByAppendingString:@"/"].UTF8String, 1);
 
         jg_data = data;
+        jg_bundleId = @(bundleId);
         jg_bundle = [NSBundle bundleWithPath:@(bundlePath)];
         jg_defaults = [[NSUserDefaults alloc] initWithSuiteName:@(bundleId)];
         jg_swap_all();
@@ -178,13 +208,21 @@ int jg_run_guest(const char *bundlePath, const char *execName, const char *dataP
     }
 
     const char *exec = strdup(execPath.UTF8String);
-    // Guest initializers run here, after the swaps, so they already see
-    // their own bundle and data folder.
+    if (access(exec, F_OK) != 0) {
+        return jg_fail(err, errLen, -2,
+                       [NSString stringWithFormat:@"Guest executable not found at %s. Try removing and re-adding the app.", exec]);
+    }
     void *handle = dlopen(exec, RTLD_NOW | RTLD_GLOBAL);
     if (!handle) {
         const char *why = dlerror();
+        NSString *detail = [NSString stringWithFormat:@"%s", why ?: "unknown"];
+        NSString *hint = @"";
+        if (detail && ([detail containsString:@"signature"] || [detail containsString:@"code sign"]))
+            hint = @" Re-sign the app in Settings → Signing → Re-sign Apps Inside This App.";
+        else if (detail && [detail containsString:@"not a mach-o"])
+            hint = @" The app wasn't converted to a loadable library. Try removing and re-adding it.";
         return jg_fail(err, errLen, -2,
-                       [NSString stringWithFormat:@"iOS refused to load it: %s", why ?: "unknown"]);
+                       [NSString stringWithFormat:@"Can't load: %@.%@", detail, hint]);
     }
     const struct mach_header_64 *mh = jg_find_image(exec);
     if (!mh) return jg_fail(err, errLen, -3, @"Loaded, but couldn't find the image afterwards.");

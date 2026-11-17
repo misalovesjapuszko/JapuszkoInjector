@@ -137,6 +137,8 @@ struct CoreConfig: Codable, Equatable {
     var anisetteServers: [String] = [
         "https://ani.iloader.app",
         "https://ani.sidestore.io",
+        "https://ani.sidestore.app",
+        "https://ani.sidestore.zip",
         "https://anisette.sideloadly.io",
     ]
     var machineName: String = "JapuszkoInjector"

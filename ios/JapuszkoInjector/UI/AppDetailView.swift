@@ -16,7 +16,8 @@ struct AppDetailView: View {
             Section {
                 HStack(spacing: 16) {
                     AppIcon(url: store.iconURL(a), name: a.name, size: 72,
-                            systemImage: a.isSelf ? "syringe.fill" : nil)
+                            systemImage: a.isSelf ? "syringe.fill" : nil,
+                            isSelf: a.isSelf)
                     VStack(alignment: .leading, spacing: 4) {
                         Text(a.name).font(.title2.bold()).lineLimit(2)
                         Text(a.secondsLeft.expiryText)
@@ -171,6 +172,11 @@ struct GuestDetailView: View {
                 LabeledContent("Signed By", value: guest.teamId)
                 LabeledContent("Size", value: guest.sizeBytes.megabytes)
                 LabeledContent("Added", value: Date(timeIntervalSince1970: TimeInterval(guest.addedAt)).short)
+            }
+
+            Section {
+                Label("Runs inside JapuszkoInjector's process. External tools (iLoader, etc.) won't see it as a separate app.", systemImage: "info.circle")
+                    .font(.footnote).foregroundStyle(.secondary)
             }
 
             Section {

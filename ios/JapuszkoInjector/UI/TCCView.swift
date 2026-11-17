@@ -273,7 +273,7 @@ struct TCCView: View {
         }
 
         guard let container = foundContainer else {
-            status = .error("Could not find TCC container. The inode scan may need a higher ceiling.")
+            status = .error("Could not find TCC container. Check that worse_query works on this iOS version and that the app group entitlement is correct.")
             return
         }
 

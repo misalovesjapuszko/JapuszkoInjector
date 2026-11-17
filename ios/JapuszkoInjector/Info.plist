@@ -121,6 +121,16 @@
 				<string>com.japuszko.mobiledevicepairing</string>
 			</array>
 		</dict>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>Property List</string>
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>com.apple.property-list</string>
+			</array>
+		</dict>
 	</array>
 
 	<key>UIApplicationSceneManifest</key>

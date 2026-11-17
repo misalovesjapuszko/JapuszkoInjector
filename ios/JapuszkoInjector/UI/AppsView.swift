@@ -28,8 +28,10 @@ struct AppsView: View {
         var out: [(String, String)] = []
         if store.accounts.isEmpty { out.append(("person.crop.circle.badge.plus", "Add an Apple ID in Settings")) }
         if !store.hasPairing { out.append(("doc.badge.plus", "Import a pairing file in Settings")) }
-        if case .failed = store.link, store.hasPairing {
-            out.append(("network.slash", "Can't reach the device. Turn on LocalDevVPN."))
+        if !store.vpnActive && store.hasPairing {
+            out.append(("network.slash", "LocalDevVPN is off. Turn it on in Settings → VPN."))
+        } else if case .failed = store.link, store.hasPairing {
+            out.append(("network.slash", "Can't reach the device. Check LocalDevVPN."))
         }
         return out
     }
@@ -133,7 +135,8 @@ struct AppRow: View {
     var body: some View {
         HStack(spacing: 12) {
             AppIcon(url: store.iconURL(app), name: app.name, size: 48,
-                    systemImage: app.isSelf ? "syringe.fill" : nil)
+                    systemImage: app.isSelf ? "syringe.fill" : nil,
+                    isSelf: app.isSelf)
             VStack(alignment: .leading, spacing: 2) {
                 Text(app.name).font(.headline).lineLimit(1)
                 Text(app.secondsLeft.expiryText)

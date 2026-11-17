@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import UIKit
+import Darwin
 
 enum LinkState: Equatable {
     case unknown, checking, ok(DeviceInfo), failed(String)
@@ -44,6 +45,7 @@ final class AppStore {
     var config = CoreConfig()
     var selfExpiry: Date?
     var hasPairing = false
+    var vpnActive = false
     var link: LinkState = .unknown
     var logs: [LogLine] = []
 
@@ -281,10 +283,19 @@ final class AppStore {
     /// Restart into the guest: remember it, then close. An app can't relaunch
     /// itself, so either a notification, StikDebug, or the user brings it back.
     func launch(_ g: GuestRecord, jit: JITMode = .off) {
+        let bundlePath = guestURL(g.appRel).path
+        let dataPath = guestURL(g.dataRel).path
+        let execPath = (bundlePath as NSString).appendingPathComponent(g.execName)
+
+        guard FileManager.default.fileExists(atPath: execPath) else {
+            show(.bad, "\(g.name): executable not found. Try removing and re-adding it.")
+            return
+        }
+
         var info: [String: String] = [
-            "bundle": guestURL(g.appRel).path,
+            "bundle": bundlePath,
             "exec": g.execName,
-            "data": guestURL(g.dataRel).path,
+            "data": dataPath,
             "id": g.bundleId,
             "name": g.name,
         ]
@@ -538,13 +549,43 @@ final class AppStore {
     // MARK: device + lab
 
     func checkLink() async {
+        vpnActive = Self.detectVPN()
         guard hasPairing else { link = .failed("No pairing file yet"); return }
+        if !vpnActive {
+            link = .failed("LocalDevVPN is not running. Turn it on in Settings → VPN.")
+            return
+        }
         link = .checking
         do {
             link = .ok(try await core.call(["op": "check_device"], as: DeviceInfo.self))
         } catch {
             link = .failed(error.localizedDescription)
         }
+    }
+
+    /// Check for a utun interface with an IP in the LocalDevVPN/StosVPN range (10.7.0.x).
+    /// Plain utun0/utun1 are always present on iOS for system services (iCloud Private Relay, etc.),
+    /// so checking just the interface name gives false positives.
+    static func detectVPN() -> Bool {
+        var ifaddr: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&ifaddr) == 0, let first = ifaddr else { return false }
+        defer { freeifaddrs(first) }
+        var cursor: UnsafeMutablePointer<ifaddrs>? = first
+        while let ifa = cursor {
+            defer { cursor = ifa.pointee.ifa_next }
+            let name = String(cString: ifa.pointee.ifa_name)
+            guard name.hasPrefix("utun"), let addr = ifa.pointee.ifa_addr else { continue }
+            if addr.pointee.sa_family == UInt8(AF_INET) {
+                var hostname = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+                if getnameinfo(addr, socklen_t(addr.pointee.sa_len),
+                               &hostname, socklen_t(hostname.count),
+                               nil, 0, NI_NUMERICHOST) == 0 {
+                    let ip = String(cString: hostname)
+                    if ip.hasPrefix("10.7.0.") { return true }
+                }
+            }
+        }
+        return false
     }
 
     func importPairing(_ url: URL) {

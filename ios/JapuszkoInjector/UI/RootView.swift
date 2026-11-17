@@ -51,7 +51,7 @@ struct RootView: View {
                     tab = 0
                     store.pendingInstall = PendingInstall(url: staged)
                 }
-            } else if ext == "plist" || ext == "mobiledevicepairing" {
+            } else if ext == "plist" || ext == "mobiledevicepairing" || ext == "" {
                 store.importPairing(url)
                 tab = 1
             }
@@ -67,6 +67,14 @@ struct RootView: View {
                 if let local = await store.download(remote) {
                     store.pendingInstall = PendingInstall(url: local)
                 }
+            }
+        } else if url.host == "pair",
+                  let s = comps.queryItems?.first(where: { $0.name == "url" })?.value,
+                  let remote = URL(string: s) {
+            tab = 1
+            Task {
+                let (tmp, _) = try await URLSession.shared.download(from: remote)
+                store.importPairing(tmp)
             }
         } else if url.host == "refresh" {
             Task { _ = await store.refreshAll(force: false, includeSelf: true) }

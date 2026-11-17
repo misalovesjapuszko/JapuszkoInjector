@@ -36,12 +36,17 @@ You need a computer once, to set it up. After that everything happens on the pho
 
 **Run inside**
 - Load apps into JapuszkoInjector's own container: no app slot, no app ID, they live as long as the injector does
+- Bundle ID, main bundle, user defaults, file manager and app-group URLs are all swizzled so the guest thinks it's running standalone
 - Optional **JIT** per app through [StikDebug](https://github.com/StikDebug/StikDebug), for emulators and VMs
 
 **Lab**
+- **MobileGestalt editor:** read and modify system configuration values
+- **TCC manager:** view and edit privacy permission grants (camera, mic, location, etc.)
+- **App data browser:** explore sandboxed container contents of any installed app
 - List and revoke certificates, see app ID usage per account
 - Export the certificate as `.p12` plus the app's `.mobileprovision` (works in signers like Feather or ESign)
-- Self-hostable anisette servers with fallback, full log view
+- Multiple anisette servers with per-server reachability test — pick the fastest or add your own
+- Full log view
 
 ## How it works
 
@@ -61,7 +66,9 @@ You need a computer once, to set it up. After that everything happens on the pho
 
 The core is written in Rust on top of [isideload](https://github.com/nab138/isideload) and [idevice](https://github.com/jkcoxson/idevice). It talks to the device's own install service through a loopback VPN using a pairing file, the same trick SideStore uses, so no computer is needed after setup.
 
-**Run inside:** the guest's executable is turned into a loadable library (header type, a smaller `__PAGEZERO`, an install name, `@executable_path` paths rewritten), and the whole bundle is signed with the injector's own team certificate. At launch, before any of the injector's UI exists, the guest gets its own data folder, bundle and settings, gets loaded, and its `main` runs. With **JIT**, StikDebug relaunches the injector with a debugger attached first.
+**Run inside:** the guest's executable is turned into a loadable library (header type, a smaller `__PAGEZERO`, an install name, `@executable_path` paths rewritten), and the whole bundle is signed with the injector's own team certificate. At launch, before any of the injector's UI exists, the guest gets its own HOME/TMPDIR, swizzled NSBundle/NSUserDefaults/bundleIdentifier/NSFileManager, gets loaded via `dlopen`, and its `LC_MAIN` entry point runs. With **JIT**, StikDebug relaunches the injector with a debugger attached first.
+
+**Lab tools** use the [worse_query](https://github.com/forcequitOS/worse_query) sandbox escape to access system containers outside the app sandbox. On iOS 27.0.1 where inode enumeration is restricted, it falls back to querying containermanagerd directly for the container path.
 
 ## Setup
 
@@ -87,7 +94,7 @@ Shortcuts → Automation → **+** → Time of Day (e.g. 04:00) → Run Immediat
 <details>
 <summary>Already have a pairing file?</summary>
 
-Open it with JapuszkoInjector (`.mobiledevicepairing` or `.plist`), or use **Lab → Link → Import pairing**. `jinject pair -o pairing.plist` writes one from a USB device.
+Open it with JapuszkoInjector (`.mobiledevicepairing` or `.plist`), share it from iLoader or Files, or use the `japuszkoinjector://pair?url=<file-url>` scheme. `jinject pair -o pairing.plist` writes one from a USB device.
 </details>
 
 ## Run inside & JIT
@@ -128,7 +135,7 @@ core/src/
   guest.rs    Run inside: Mach-O patcher + signing with the team cert
   ffi.rs      C/JSON API used by Swift
 cli/          jinject: bootstrap, install, pair, certs, export-cert, app-ids
-ios/          SwiftUI app (XcodeGen project.yml), Guest/ runtime (Obj-C)
+ios/          SwiftUI app (XcodeGen project.yml), Guest/ runtime (Obj-C), Exploit/ (worse_query, pathleak)
 ```
 </details>
 
@@ -147,6 +154,7 @@ ios/          SwiftUI app (XcodeGen project.yml), Guest/ runtime (Obj-C)
 - [isideload](https://github.com/nab138/isideload) by nab138: Apple ID, developer services, signing, install (MIT)
 - [idevice](https://github.com/jkcoxson/idevice) by jkcoxson: lockdown, AFC, installation proxy (MIT)
 - [apple-codesign-quick](https://github.com/Dadoum/apple-crates) by Dadoum: code signing (LGPL-2.1-or-later)
+- [worse_query](https://github.com/forcequitOS/worse_query) by forcequit: sandbox escape for iOS 26–27 (GPL-3.0)
 - [StikDebug](https://github.com/StikDebug/StikDebug): JIT enabling for container apps
 - SideStore, AltStore and LiveContainer, for showing what's possible on stock iOS
 

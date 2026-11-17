@@ -1,18 +1,19 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// App icon from disk, or a plain placeholder when the bundle only ships
-/// its icon inside Assets.car.
 struct AppIcon: View {
     var url: URL?
     var name: String
     var size: CGFloat = 48
     var systemImage: String? = nil
+    var isSelf: Bool = false
 
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: size * 0.225, style: .continuous)
         Group {
             if let url, let img = UIImage(contentsOfFile: url.path) {
+                Image(uiImage: img).resizable().interpolation(.high)
+            } else if isSelf, let img = Self.bundleIcon {
                 Image(uiImage: img).resizable().interpolation(.high)
             } else if let systemImage {
                 ZStack {
@@ -35,6 +36,16 @@ struct AppIcon: View {
         .clipShape(shape)
         .overlay(shape.stroke(Color.primary.opacity(0.08), lineWidth: 0.5))
     }
+
+    private static let bundleIcon: UIImage? = {
+        if let icons = Bundle.main.infoDictionary?["CFBundleIcons"] as? [String: Any],
+           let primary = icons["CFBundlePrimaryIcon"] as? [String: Any],
+           let files = primary["CFBundleIconFiles"] as? [String],
+           let name = files.last {
+            return UIImage(named: name)
+        }
+        return UIImage(named: "AppIcon")
+    }()
 }
 
 /// Colour for "time left" text.

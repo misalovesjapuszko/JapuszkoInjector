@@ -224,7 +224,7 @@ struct GestaltView: View {
         }.value
 
         guard let container else {
-            status = .error("Could not find MobileGestalt container. The inode scan may need a higher ceiling, or the container name differs on this OS version.")
+            status = .error("Could not find MobileGestalt container. Check that worse_query works on this iOS version and that the app group entitlement is correct.")
             return
         }
 

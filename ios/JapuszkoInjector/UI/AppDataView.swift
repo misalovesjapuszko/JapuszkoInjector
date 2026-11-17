@@ -117,10 +117,20 @@ struct AppDataView: View {
 
         let results: [AppContainer] = await Task.detached {
             let basePath = "/var/mobile/Containers/Data/Application"
-            let children = SandboxEscape.enumerateChildren(of: basePath)
+            let ceiling = SandboxEscape.defaultMaxInode
+
+            var children = SandboxEscape.enumerateChildren(of: basePath, maxInode: ceiling)
+
+            // If enumeration returned nothing, try with a sandbox extension.
+            if children.isEmpty {
+                if let handle = try? SandboxEscape.acquireAccessAuto(to: basePath) {
+                    children = SandboxEscape.enumerateChildren(of: basePath, maxInode: ceiling)
+                    SandboxEscape.releaseAccess(handle)
+                }
+            }
+
             return children.compactMap { path -> AppContainer? in
                 let uuid = (path as NSString).lastPathComponent
-                // Try to read metadata to get the bundle ID
                 let metaPath = path + "/.com.apple.mobile_container_manager.metadata.plist"
                 var bundleId = ""
                 var displayName = uuid
@@ -138,7 +148,7 @@ struct AppDataView: View {
         }.value
 
         containers = results
-        status = results.isEmpty ? .error("No containers found. The inode scan may need a higher ceiling.") : .ready
+        status = results.isEmpty ? .error("No containers found. Check that worse_query works on this iOS version and that the app group entitlement is correct.") : .ready
     }
 }
 

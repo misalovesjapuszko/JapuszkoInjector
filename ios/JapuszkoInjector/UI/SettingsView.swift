@@ -48,6 +48,12 @@ struct SettingsView: View {
                 Section {
                     LabeledContent("Pairing File", value: store.hasPairing ? "Imported" : "Missing")
                     Button("Import Pairing File…") { importingPairing = true }
+                    LabeledContent("LocalDevVPN") {
+                        HStack(spacing: 6) {
+                            Circle().fill(store.vpnActive ? Color.green : Color.red).frame(width: 8, height: 8)
+                            Text(store.vpnActive ? "Active" : "Off").foregroundStyle(.secondary)
+                        }
+                    }
                     LabeledContent("Device") {
                         HStack(spacing: 6) {
                             Circle().fill(linkColor).frame(width: 8, height: 8)
@@ -115,7 +121,7 @@ struct SettingsView: View {
             .navigationTitle("Settings")
             .sheet(isPresented: $addingAccount) { AccountSheet().modalLevel() }
             .sheet(isPresented: $exporting) { ExportSheet().modalLevel() }
-            .fileImporter(isPresented: $importingPairing, allowedContentTypes: [.propertyList, .data]) { r in
+            .fileImporter(isPresented: $importingPairing, allowedContentTypes: [.propertyList, .data, .item]) { r in
                 if case .success(let url) = r { store.importPairing(url) }
             }
         }
@@ -368,13 +374,39 @@ struct ExportSheet: View {
 struct AnisetteView: View {
     @Environment(AppStore.self) private var store
     @State private var newServer = ""
+    @State private var testing: String?
+    @State private var results: [String: Bool] = [:]
 
     var body: some View {
         @Bindable var store = store
         List {
             Section {
-                ForEach(store.config.anisetteServers, id: \.self) { s in
-                    Text(s).lineLimit(1).truncationMode(.middle)
+                ForEach(Array(store.config.anisetteServers.enumerated()), id: \.element) { idx, s in
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            HStack(spacing: 6) {
+                                Text(s).lineLimit(1).truncationMode(.middle)
+                                if idx == 0 {
+                                    Text("Active")
+                                        .font(.caption2.weight(.semibold))
+                                        .padding(.horizontal, 6).padding(.vertical, 2)
+                                        .background(Color.accentColor.opacity(0.15), in: Capsule())
+                                        .foregroundStyle(Color.accentColor)
+                                }
+                            }
+                            if let ok = results[s] {
+                                Text(ok ? "Reachable" : "Unreachable")
+                                    .font(.caption).foregroundStyle(ok ? .green : .red)
+                            }
+                        }
+                        Spacer()
+                        if testing == s {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Button("Test") { testServer(s) }
+                                .font(.caption).buttonStyle(.bordered).controlSize(.mini)
+                        }
+                    }
                 }
                 .onDelete { idx in
                     store.config.anisetteServers.remove(atOffsets: idx)
@@ -385,7 +417,7 @@ struct AnisetteView: View {
                     store.saveConfig()
                 }
             } footer: {
-                Text("Tried from top to bottom. A self-hosted anisette-v3-server is the most reliable option.")
+                Text("Tried from top to bottom. The first reachable server is used. A self-hosted anisette-v3-server is the most reliable option.")
             }
             Section {
                 TextField("https://ani.example.com", text: $newServer)
@@ -404,6 +436,21 @@ struct AnisetteView: View {
         }
         .navigationTitle("Anisette Servers")
         .toolbar { EditButton() }
+    }
+
+    private func testServer(_ server: String) {
+        testing = server
+        Task {
+            var ok = false
+            defer { testing = nil; results[server] = ok }
+            guard let url = URL(string: server) else { return }
+            var request = URLRequest(url: url, timeoutInterval: 10)
+            request.httpMethod = "GET"
+            if let (_, resp) = try? await URLSession.shared.data(for: request),
+               let http = resp as? HTTPURLResponse, http.statusCode < 500 {
+                ok = true
+            }
+        }
     }
 }
 
