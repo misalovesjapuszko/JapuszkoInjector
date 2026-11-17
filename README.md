@@ -143,6 +143,17 @@ ios/          SwiftUI app (XcodeGen project.yml), Guest/ runtime (Obj-C), Exploi
 ```
 </details>
 
+## Roadmap
+
+Planned work, roughly in priority order:
+
+- **Wireless pairing without a PC** — get the pairing file over Wi-Fi using Bonjour discovery of `_remotepairing-manual-pairing._tcp` services (like SideStore's Minimuxer)
+- **Built-in JIT enabler** — enable JIT directly from the app via RSD tunnel + debug proxy `vAttach` command, no external StikDebug needed (like StikJIT)
+- **Deep process identity override** — patch `_CFGetProcessPath()` internals via ARM64 instruction emulation for full CoreFoundation compatibility (like LiveContainer)
+- **Deep NSUserDefaults hooking** — hook `CFPrefsPlistSource.initWithDomain` and `_CFPrefsCurrentAppIdentifierCache` for framework-internal preference redirects
+- **dyld library validation bypass** — JITLess mode with certificate password signing for iOS 26+ guest apps
+- **Store tab** — browse and install apps from user-configured JSON source lists
+
 ## FAQ
 
 **Why does it need a VPN app?** iOS only lets an app reach the install service over the network. The VPN loops that traffic back to the device itself. A free Apple ID can't sign an app with its own VPN extension, so it lives in a separate app.

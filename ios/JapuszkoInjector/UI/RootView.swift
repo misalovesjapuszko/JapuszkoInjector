@@ -11,6 +11,9 @@ struct RootView: View {
             AppsView()
                 .tabItem { Label("Apps", systemImage: "square.stack.3d.up.fill") }
                 .tag(0)
+            StoreView()
+                .tabItem { Label("Store", systemImage: "storefront.fill") }
+                .tag(3)
             LabView()
                 .tabItem { Label("Lab", systemImage: "flask.fill") }
                 .tag(2)
