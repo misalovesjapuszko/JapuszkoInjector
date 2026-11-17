@@ -36,7 +36,9 @@ You need a computer once, to set it up. After that everything happens on the pho
 
 **Run inside**
 - Load apps into JapuszkoInjector's own container: no app slot, no app ID, they live as long as the injector does
-- Bundle ID, main bundle, user defaults, file manager and app-group URLs are all swizzled so the guest thinks it's running standalone
+- Full runtime isolation: bundle ID, main bundle, user defaults, file manager, app-group URLs, process name and `__progname` are all swizzled — the guest thinks it's running standalone
+- Lazy symbol resolution (`RTLD_LAZY`) so apps with weakly-linked frameworks load correctly
+- NIBs, storyboards and Info.plist registered automatically after load
 - Optional **JIT** per app through [StikDebug](https://github.com/StikDebug/StikDebug), for emulators and VMs
 
 **Lab**
@@ -66,9 +68,11 @@ You need a computer once, to set it up. After that everything happens on the pho
 
 The core is written in Rust on top of [isideload](https://github.com/nab138/isideload) and [idevice](https://github.com/jkcoxson/idevice). It talks to the device's own install service through a loopback VPN using a pairing file, the same trick SideStore uses, so no computer is needed after setup.
 
-**Run inside:** the guest's executable is turned into a loadable library (header type, a smaller `__PAGEZERO`, an install name, `@executable_path` paths rewritten), and the whole bundle is signed with the injector's own team certificate. At launch, before any of the injector's UI exists, the guest gets its own HOME/TMPDIR, swizzled NSBundle/NSUserDefaults/bundleIdentifier/NSFileManager, gets loaded via `dlopen`, and its `LC_MAIN` entry point runs. With **JIT**, StikDebug relaunches the injector with a debugger attached first.
+**Run inside** (based on [LiveContainer](https://github.com/khanhduytran0/LiveContainer)'s approach): the guest's executable is turned into a loadable library (header type, a smaller `__PAGEZERO`, an install name, `@executable_path` paths rewritten), and the whole bundle is signed with the injector's own team certificate. At launch, before any of the injector's UI exists, the runtime sets up the guest's data directory, overrides process identity (`__progname`, `NSProcessInfo.processName`, `argv[0]`), swizzles NSBundle/NSUserDefaults/bundleIdentifier/NSFileManager, loads the guest via `dlopen(RTLD_LAZY | RTLD_GLOBAL | RTLD_FIRST)`, registers its bundle resources, and jumps to its `LC_MAIN` entry point. With **JIT**, StikDebug relaunches the injector with a debugger attached first.
 
-**Lab tools** use the [worse_query](https://github.com/forcequitOS/worse_query) sandbox escape to access system containers outside the app sandbox. On iOS 27.0.1 where inode enumeration is restricted, it falls back to querying containermanagerd directly for the container path.
+**Lab tools** use the [worse_query](https://github.com/forcequitOS/worse_query) sandbox escape to access system containers outside the app sandbox. On iOS 27.0.1, it queries containermanagerd directly with the correct flags and consumes a sandbox extension token, then falls back to inode enumeration with auto-calibrated ceiling if needed.
+
+**VPN detection** checks utun and ipsec interfaces for private IPs (10.7.0.x, 10.6.x, fd*) and falls back to a TCP probe to 10.7.0.1:62078 (the standard lockdownd port on the loopback tunnel).
 
 ## Setup
 
@@ -156,7 +160,9 @@ ios/          SwiftUI app (XcodeGen project.yml), Guest/ runtime (Obj-C), Exploi
 - [apple-codesign-quick](https://github.com/Dadoum/apple-crates) by Dadoum: code signing (LGPL-2.1-or-later)
 - [worse_query](https://github.com/forcequitOS/worse_query) by forcequit: sandbox escape for iOS 26–27 (GPL-3.0)
 - [StikDebug](https://github.com/StikDebug/StikDebug): JIT enabling for container apps
-- SideStore, AltStore and LiveContainer, for showing what's possible on stock iOS
+- [LiveContainer](https://github.com/khanhduytran0/LiveContainer) by khanhduytran0: guest runtime approach (MIT)
+- [SideStore](https://github.com/SideStore/SideStore): VPN detection, wireless pairing, anisette architecture
+- AltStore, for showing what's possible on stock iOS
 
 ## License
 
