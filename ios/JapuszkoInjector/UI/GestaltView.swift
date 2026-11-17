@@ -234,10 +234,25 @@ struct GestaltView: View {
         status = .loading
 
         do {
+            // Acquire sandbox access to the container root.
             let handle = try await Task.detached {
                 try SandboxEscape.acquireAccessAuto(to: container)
             }.value
             sandboxHandle = handle
+
+            // On iOS 27.0.1 we may also need access to the specific Caches
+            // subdirectory if the container extension doesn't cover it.
+            let cachesDir = container + "/Library/Caches"
+            if !FileManager.default.isReadableFile(atPath: gestaltPlist) {
+                if let subHandle = try? SandboxEscape.acquireAccessAuto(to: cachesDir) {
+                    // Keep this alive -- releasing happens in onDisappear via
+                    // the main sandboxHandle. We intentionally leak this sub-
+                    // handle; it's released when the process exits, and the
+                    // only alternative (tracking multiple handles) adds
+                    // complexity for no user-visible benefit.
+                    _ = subHandle
+                }
+            }
 
             let data = try Data(contentsOf: URL(fileURLWithPath: gestaltPlist))
             guard let plist = try PropertyListSerialization.propertyList(

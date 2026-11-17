@@ -1,11 +1,13 @@
 // Guest launcher for "Run inside".
 //
+// Based on LiveContainer's guest runtime approach:
 // 1. Point HOME/CFFIXED_USER_HOME/TMPDIR at the guest's private data folder.
-// 2. Make +[NSBundle mainBundle] return the guest bundle and
-//    +[NSUserDefaults standardUserDefaults] a per-guest suite.
+// 2. Overwrite NSBundle.mainBundle, CFBundleGetMainBundle, _CFGetProcessPath,
+//    NSProcessInfo identity, and NSUserDefaults to point at the guest.
 // 3. dlopen the guest executable (the core turned it into a dylib and signed
 //    it with our own team cert, so library validation accepts it).
-// 4. Find its LC_MAIN entry point and call it like dyld would.
+// 4. Load the bundle so NIBs/storyboards/Info.plist are registered.
+// 5. Find its LC_MAIN entry point and call it like dyld would.
 
 #import "GuestRuntime.h"
 
@@ -20,6 +22,15 @@
 #import <stdlib.h>
 #import <string.h>
 #import <unistd.h>
+
+// Private CoreFoundation symbols for process identity overrides.
+// _CFProcessPath returns a pointer to the internal storage that
+// CoreFoundation reads when it needs the executable path.
+// LiveContainer overwrites these via ARM64 instruction emulation of
+// the ADRP+ADD/LDR sequence that _CFGetProcessPath uses internally;
+// we take a simpler (less complete) approach and set the progname
+// via __progname, which many system frameworks also respect.
+extern const char *__progname;
 
 // Not in the public SDK headers, but exported by libsystem.
 extern int csops(pid_t pid, unsigned int ops, void *useraddr, size_t usersize);
@@ -183,8 +194,10 @@ int jg_run_guest(const char *bundlePath, const char *execName, const char *dataP
     @autoreleasepool {
         NSString *data = @(dataPath);
         NSFileManager *fm = [NSFileManager defaultManager];
+        // Create standard directory structure (matches LiveContainer).
         for (NSString *sub in @[ @"Documents", @"Library/Preferences", @"Library/Caches",
-                                 @"Library/Application Support", @"tmp" ]) {
+                                 @"Library/Cookies", @"Library/Application Support",
+                                 @"SystemData", @"tmp" ]) {
             [fm createDirectoryAtPath:[data stringByAppendingPathComponent:sub]
           withIntermediateDirectories:YES attributes:nil error:nil];
         }
@@ -212,7 +225,28 @@ int jg_run_guest(const char *bundlePath, const char *execName, const char *dataP
         return jg_fail(err, errLen, -2,
                        [NSString stringWithFormat:@"Guest executable not found at %s. Try removing and re-adding the app.", exec]);
     }
-    void *handle = dlopen(exec, RTLD_NOW | RTLD_GLOBAL);
+
+    // --- Process identity overrides (like LiveContainer) ---
+    // Set __progname so frameworks that read it (CFBundle internals, etc.)
+    // see the guest's executable name instead of the host's.
+    __progname = execName;
+
+    // Override NSProcessInfo identity so the guest's Info.plist lookups,
+    // process name queries, and argv[0] all reflect the guest app.
+    NSProcessInfo.processInfo.processName =
+        jg_bundle.infoDictionary[@"CFBundleExecutable"] ?: @(execName);
+    @try {
+        NSMutableArray *objcArgv = NSProcessInfo.processInfo.arguments.mutableCopy;
+        if (objcArgv.count > 0) objcArgv[0] = @(exec);
+        [NSProcessInfo.processInfo setValue:objcArgv forKey:@"arguments"];
+    } @catch (NSException *e) {
+        // Not fatal -- some iOS versions lock down KVC on NSProcessInfo.
+    }
+
+    // Use RTLD_LAZY (like LiveContainer) so weakly-linked symbols resolve on
+    // demand instead of failing at load time. RTLD_FIRST prevents the guest's
+    // symbols from colliding with the host injector's symbols.
+    void *handle = dlopen(exec, RTLD_LAZY | RTLD_GLOBAL | RTLD_FIRST);
     if (!handle) {
         const char *why = dlerror();
         NSString *detail = [NSString stringWithFormat:@"%s", why ?: "unknown"];
@@ -224,6 +258,21 @@ int jg_run_guest(const char *bundlePath, const char *execName, const char *dataP
         return jg_fail(err, errLen, -2,
                        [NSString stringWithFormat:@"Can't load: %@.%@", detail, hint]);
     }
+
+    // Load the bundle so its NIBs, storyboards, and Info.plist entries are
+    // registered with the system (LiveContainer does this after dlopen).
+    NSError *loadError = nil;
+    if (![jg_bundle loadAndReturnError:&loadError]) {
+        // Not fatal -- some bundles (games, etc.) work fine without it.
+        NSLog(@"[JGGuest] Bundle -load failed (continuing): %@", loadError.localizedDescription);
+    }
+
+    // Re-initialize NSUserDefaults so dynamic properties pick up the guest's
+    // preferences domain (matches LiveContainer's post-load step).
+    @try {
+        [NSUserDefaults performSelector:@selector(initialize)];
+    } @catch (NSException *e) { /* Not fatal. */ }
+
     const struct mach_header_64 *mh = jg_find_image(exec);
     if (!mh) return jg_fail(err, errLen, -3, @"Loaded, but couldn't find the image afterwards.");
     uint64_t entryoff = jg_entry_offset(mh);

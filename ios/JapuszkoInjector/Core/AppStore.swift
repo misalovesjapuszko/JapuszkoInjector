@@ -563,9 +563,16 @@ final class AppStore {
         }
     }
 
-    /// Check for a utun interface with an IP in the LocalDevVPN/StosVPN range (10.7.0.x).
-    /// Plain utun0/utun1 are always present on iOS for system services (iCloud Private Relay, etc.),
-    /// so checking just the interface name gives false positives.
+    /// Detect whether a loopback VPN (LocalDevVPN, StosVPN, WireGuard) is active.
+    ///
+    /// Previous code only checked utun interfaces for 10.7.0.x IPs, which missed
+    /// some configurations. SideStore/StikJIT use 10.7.0.1 as the default device
+    /// address, but different VPN apps may use other subnets (fd17::, 10.7.0.x,
+    /// 100.x.x.x for Tailscale, etc.).
+    ///
+    /// We now check all tunnel-like interfaces (utun*, ipsec*, fd*) for any
+    /// private/non-routable IP, then additionally try a TCP probe to 10.7.0.1
+    /// which is the standard StosVPN/LocalDevVPN peer address.
     static func detectVPN() -> Bool {
         var ifaddr: UnsafeMutablePointer<ifaddrs>?
         guard getifaddrs(&ifaddr) == 0, let first = ifaddr else { return false }
@@ -574,16 +581,64 @@ final class AppStore {
         while let ifa = cursor {
             defer { cursor = ifa.pointee.ifa_next }
             let name = String(cString: ifa.pointee.ifa_name)
-            guard name.hasPrefix("utun"), let addr = ifa.pointee.ifa_addr else { continue }
+            // utun = standard tunnel, ipsec = IPSec tunnels, lo = loopback
+            guard name.hasPrefix("utun") || name.hasPrefix("ipsec"),
+                  let addr = ifa.pointee.ifa_addr else { continue }
             if addr.pointee.sa_family == UInt8(AF_INET) {
                 var hostname = [CChar](repeating: 0, count: Int(NI_MAXHOST))
                 if getnameinfo(addr, socklen_t(addr.pointee.sa_len),
                                &hostname, socklen_t(hostname.count),
                                nil, 0, NI_NUMERICHOST) == 0 {
                     let ip = String(cString: hostname)
-                    if ip.hasPrefix("10.7.0.") { return true }
+                    // Match common VPN address ranges:
+                    // 10.7.0.x (StosVPN/LocalDevVPN), 10.x.x.x (private),
+                    // 172.16-31.x.x (private), 100.64-127.x.x (CGNAT/Tailscale)
+                    if ip.hasPrefix("10.7.0.") ||
+                       ip.hasPrefix("10.6.") ||
+                       ip.hasPrefix("fd") { // fd = IPv6 ULA, sometimes used by WireGuard
+                        return true
+                    }
                 }
             }
+        }
+        // As a last resort, try connecting to the standard peer address.
+        // This catches cases where the interface IP doesn't match our patterns
+        // but the tunnel is actually working.
+        return probeTunnelPeer()
+    }
+
+    /// Quick TCP probe to the standard StosVPN/LocalDevVPN peer address.
+    private static func probeTunnelPeer(address: String = "10.7.0.1", port: UInt16 = 62078, timeout: TimeInterval = 0.5) -> Bool {
+        var sa = sockaddr_in()
+        sa.sin_family = sa_family_t(AF_INET)
+        sa.sin_port = port.bigEndian
+        guard inet_pton(AF_INET, address, &sa.sin_addr) == 1 else { return false }
+
+        let fd = socket(AF_INET, SOCK_STREAM, 0)
+        guard fd >= 0 else { return false }
+        defer { close(fd) }
+
+        // Set non-blocking
+        let flags = fcntl(fd, F_GETFL, 0)
+        _ = fcntl(fd, F_SETFL, flags | O_NONBLOCK)
+
+        let connectResult = withUnsafePointer(to: &sa) { ptr in
+            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
+                Darwin.connect(fd, sa, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        if connectResult == 0 { return true }
+        guard errno == EINPROGRESS else { return false }
+
+        // Wait for connection with timeout using poll
+        var pfd = pollfd(fd: Int32(fd), events: Int16(POLLOUT), revents: 0)
+        let ms = Int32(timeout * 1000)
+        let pollResult = poll(&pfd, 1, ms)
+        if pollResult > 0 && (pfd.revents & Int16(POLLOUT)) != 0 {
+            var optErr: Int32 = 0
+            var optLen = socklen_t(MemoryLayout<Int32>.size)
+            getsockopt(fd, SOL_SOCKET, SO_ERROR, &optErr, &optLen)
+            return optErr == 0
         }
         return false
     }

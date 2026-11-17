@@ -108,6 +108,7 @@ struct SettingsView: View {
                     NavigationLink("Apps on This Device") { DeviceAppsView() }
                     NavigationLink("Logs") { LogView() }
                     LabeledContent("StikDebug", value: store.stikDebugInstalled ? "Installed" : "Not Installed")
+                    LabeledContent("JIT (This Process)", value: store.jitActive ? "Enabled" : "Disabled")
                 }
 
                 Section {
