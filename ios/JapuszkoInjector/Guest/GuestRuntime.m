@@ -4,10 +4,11 @@
 // 1. Point HOME/CFFIXED_USER_HOME/TMPDIR at the guest's private data folder.
 // 2. Overwrite NSBundle.mainBundle, CFBundleGetMainBundle, _CFGetProcessPath,
 //    NSProcessInfo identity, and NSUserDefaults to point at the guest.
-// 3. dlopen the guest executable (the core turned it into a dylib and signed
-//    it with our own team cert, so library validation accepts it).
-// 4. Load the bundle so NIBs/storyboards/Info.plist are registered.
-// 5. Find its LC_MAIN entry point and call it like dyld would.
+// 3. Bypass dyld library validation (when JIT is available) so dlopen
+//    accepts the patched binary regardless of CMS signature format.
+// 4. dlopen the guest executable (patched to a dylib by the Rust core).
+// 5. Load the bundle so NIBs/storyboards/Info.plist are registered.
+// 6. Find its LC_MAIN entry point and call it like dyld would.
 
 #import "GuestRuntime.h"
 
@@ -17,10 +18,13 @@
 #import <dlfcn.h>
 #import <limits.h>
 #import <mach-o/dyld.h>
+#import <mach-o/dyld_images.h>
 #import <mach-o/loader.h>
+#import <mach/mach.h>
 #import <objc/runtime.h>
 #import <stdlib.h>
 #import <string.h>
+#import <sys/mman.h>
 #import <unistd.h>
 
 // Private CoreFoundation symbols for process identity overrides.
@@ -52,6 +56,199 @@ int jg_wait_for_jit(double seconds) {
     }
     return jg_jit_enabled();
 }
+
+// ---------------------------------------------------------------------------
+// dyld library validation bypass (ported from LiveContainer).
+//
+// When JIT is active (CS_DEBUGGED), dyld validates every dlopen'd library via
+// two fcntl commands:
+//   - F_ADDFILESIGS_RETURN: register the code signature with the kernel
+//   - F_CHECK_LV:           verify library validation (same team as host)
+//
+// We hook dyld's internal fcntl and mmap so that:
+//   - F_ADDFILESIGS_RETURN always reports "covers everything"
+//   - F_CHECK_LV always succeeds
+//   - mmap with PROT_EXEC falls back to anonymous mapping + memcpy when
+//     the kernel rejects the signed pages
+//
+// This requires JIT (writable + executable pages). Without JIT, we rely on
+// the Rust core's CMS-based signing and give a clear error if it fails.
+// On iOS 26+ the dyld bypass is not supported; JITLess signing is required.
+// ---------------------------------------------------------------------------
+
+#ifndef F_ADDFILESIGS_RETURN
+#define F_ADDFILESIGS_RETURN 97
+#endif
+#ifndef F_CHECK_LV
+#define F_CHECK_LV 98
+#endif
+
+typedef struct {
+    off_t   fs_file_start;
+    void   *fs_blob_start;
+    size_t  fs_blob_size;
+} jg_fsignatures_t;
+
+// Raw mach_vm_protect kernel trap -- bypasses the userspace wrapper so we can
+// change dyld page protection even when the pages are locked.
+__attribute__((naked))
+static kern_return_t jg_vm_protect(vm_map_t task __unused, vm_address_t addr __unused,
+                                   vm_size_t size __unused, boolean_t set_max __unused,
+                                   vm_prot_t prot __unused)
+{
+    __asm__(
+        "mov x16, #-0xe\n"   // mach_vm_protect trap
+        "svc #0x80\n"
+        "ret\n"
+    );
+}
+
+// Syscall instruction signatures found inside dyld's internal fcntl / mmap
+// wrappers.  These are the ARM64 encoding of:
+//   MOV X16, #<syscall_number>; SVC #0x80
+static const uint8_t jg_fcntl_sig[] = {0x90, 0x0B, 0x80, 0xD2, 0x01, 0x10, 0x00, 0xD4};
+static const uint8_t jg_mmap_sig[]  = {0xB0, 0x18, 0x80, 0xD2, 0x01, 0x10, 0x00, 0xD4};
+
+// Private libc wrappers for the actual syscalls.
+extern void *__mmap(void *addr, size_t len, int prot, int flags, int fd, off_t offset);
+extern int   __fcntl(int fildes, int cmd, void *param);
+
+static int (*jg_orig_fcntl)(int, int, void *);
+
+/// Hook for dyld's internal fcntl: makes library validation always pass.
+static int jg_hooked_fcntl(int fildes, int cmd, void *param) {
+    if (cmd == F_ADDFILESIGS_RETURN) {
+        // Let the kernel register what it can, then claim full coverage.
+        jg_orig_fcntl(fildes, cmd, param);
+        jg_fsignatures_t *fsig = (jg_fsignatures_t *)param;
+        fsig->fs_file_start = 0xFFFFFFFF;
+        return 0;
+    }
+    if (cmd == F_CHECK_LV) {
+        // Skip library validation entirely.
+        return 0;
+    }
+    return jg_orig_fcntl(fildes, cmd, param);
+}
+
+/// Hook for dyld's internal mmap: when the kernel rejects PROT_EXEC (code
+/// signature invalid), fall back to mapping the file into anonymous memory
+/// and flipping protection after the copy.
+static void *jg_hooked_mmap(void *addr, size_t len, int prot, int flags,
+                             int fd, off_t offset) {
+    void *map = __mmap(addr, len, prot, flags, fd, offset);
+    if (fd && (prot & PROT_EXEC) && map == MAP_FAILED) {
+        // Map anonymously as R/W, copy from file, then set requested prot.
+        map = __mmap(addr, len, PROT_READ | PROT_WRITE,
+                     (flags | MAP_PRIVATE | MAP_ANON) & ~MAP_FIXED, 0, 0);
+        if (map == MAP_FAILED) return map;
+        void *file_map = __mmap(NULL, len, PROT_READ, MAP_PRIVATE, fd, offset);
+        if (file_map == MAP_FAILED) { munmap(map, len); return MAP_FAILED; }
+        memcpy(map, file_map, len);
+        munmap(file_map, len);
+        mprotect(map, len, prot);
+    }
+    return map;
+}
+
+/// Get dyld's image base address via task_info.
+static void *jg_dyld_base(void) {
+    struct task_dyld_info info;
+    mach_msg_type_number_t count = TASK_DYLD_INFO_COUNT;
+    if (task_info(mach_task_self_, TASK_DYLD_INFO,
+                  (task_info_t)&info, &count) != KERN_SUCCESS) {
+        return NULL;
+    }
+    struct dyld_all_image_infos *all = (void *)(uintptr_t)info.all_image_info_addr;
+    return (void *)all->dyldImageLoadAddress;
+}
+
+/// Search for a byte pattern inside the first 512 KB of a region.
+static void *jg_search(const void *base, const uint8_t *sig, size_t siglen) {
+    const uint8_t *p = (const uint8_t *)base;
+    for (size_t i = 0; i < 0x80000; i += 4) {
+        if (p[i] == sig[0] && memcmp(p + i, sig, siglen) == 0) {
+            return (void *)(p + i);
+        }
+    }
+    return NULL;
+}
+
+/// Write an ARM64 trampoline at `target` that branches to `hook`.
+/// Overwrites 16 bytes: LDR X16, +8; BR X16; .quad hook_address
+static bool jg_patch(void *target, void *hook) {
+    uintptr_t page = (uintptr_t)target & ~(uintptr_t)0x3FFF; // 16 KB pages
+    kern_return_t kr;
+
+    // Make the page writable (use the raw trap — regular vm_protect may
+    // fail on dyld pages even with CS_DEBUGGED).
+    kr = jg_vm_protect(mach_task_self(), (vm_address_t)page, 0x4000,
+                       false, VM_PROT_READ | VM_PROT_WRITE | VM_PROT_COPY);
+    if (kr != KERN_SUCCESS) {
+        NSLog(@"[JGGuest] vm_protect(RW) failed on %p: %d", target, kr);
+        return false;
+    }
+
+    uint32_t *code = (uint32_t *)target;
+    code[0] = 0x58000050;              // LDR X16, [PC, #8]
+    code[1] = 0xD61F0200;              // BR X16
+    *(void **)(code + 2) = hook;       // 64-bit hook address
+
+    // Flush instruction cache.
+    __builtin___clear_cache(target, (char *)target + 16);
+
+    // Restore executable permission.
+    kr = jg_vm_protect(mach_task_self(), (vm_address_t)page, 0x4000,
+                       false, VM_PROT_READ | VM_PROT_EXECUTE);
+    if (kr != KERN_SUCCESS) {
+        NSLog(@"[JGGuest] vm_protect(RX) failed on %p: %d", target, kr);
+        return false;
+    }
+    return true;
+}
+
+static bool jg_bypass_active = false;
+
+/// Set up the dyld library validation bypass. Must be called with JIT active.
+static void jg_bypass_dyld_validation(void) {
+    if (jg_bypass_active) return;
+
+    // Not supported on iOS 26+ (dyld 4 changed its internals; LiveContainer
+    // also skips this path and requires JITLess signing).
+    if (@available(iOS 26.0, *)) {
+        NSLog(@"[JGGuest] dyld bypass skipped on iOS 26+ (requires JITLess signing)");
+        return;
+    }
+
+    void *dyld = jg_dyld_base();
+    if (!dyld) {
+        NSLog(@"[JGGuest] could not find dyld base address");
+        return;
+    }
+    NSLog(@"[JGGuest] dyld at %p, setting up library validation bypass", dyld);
+
+    jg_orig_fcntl = __fcntl;
+
+    void *fcntl_site = jg_search(dyld, jg_fcntl_sig, sizeof(jg_fcntl_sig));
+    void *mmap_site  = jg_search(dyld, jg_mmap_sig,  sizeof(jg_mmap_sig));
+
+    if (!fcntl_site || !mmap_site) {
+        NSLog(@"[JGGuest] could not locate dyld fcntl/mmap (%p / %p)",
+              fcntl_site, mmap_site);
+        return;
+    }
+
+    bool ok = jg_patch(fcntl_site, jg_hooked_fcntl)
+           && jg_patch(mmap_site,  jg_hooked_mmap);
+    if (ok) {
+        jg_bypass_active = true;
+        NSLog(@"[JGGuest] dyld library validation bypass active");
+    } else {
+        NSLog(@"[JGGuest] dyld bypass patching failed");
+    }
+}
+
+// ---------------------------------------------------------------------------
 
 static NSBundle *jg_bundle;
 static NSUserDefaults *jg_defaults;
@@ -243,6 +440,13 @@ int jg_run_guest(const char *bundlePath, const char *execName, const char *dataP
         // Not fatal -- some iOS versions lock down KVC on NSProcessInfo.
     }
 
+    // With JIT active, bypass dyld's library validation so dlopen accepts
+    // our patched binary regardless of CMS signature format.  Without JIT,
+    // we rely on the Rust core's certificate-based signing.
+    if (jg_jit_enabled()) {
+        jg_bypass_dyld_validation();
+    }
+
     // Use RTLD_LAZY (like LiveContainer) so weakly-linked symbols resolve on
     // demand instead of failing at load time. RTLD_FIRST prevents the guest's
     // symbols from colliding with the host injector's symbols.
@@ -251,10 +455,20 @@ int jg_run_guest(const char *bundlePath, const char *execName, const char *dataP
         const char *why = dlerror();
         NSString *detail = [NSString stringWithFormat:@"%s", why ?: "unknown"];
         NSString *hint = @"";
-        if (detail && ([detail containsString:@"signature"] || [detail containsString:@"code sign"]))
-            hint = @" Re-sign the app in Settings → Signing → Re-sign Apps Inside This App.";
-        else if (detail && [detail containsString:@"not a mach-o"])
-            hint = @" The app wasn't converted to a loadable library. Try removing and re-adding it.";
+        if (detail && ([detail containsString:@"signature"] || [detail containsString:@"code sign"])) {
+            if (jg_jit_enabled()) {
+                hint = @" The dyld bypass could not intercept validation."
+                        " Try removing and re-adding the app.";
+            } else {
+                hint = @" JIT is not active, so the library validation bypass"
+                        " is unavailable.  Enable JIT (e.g. via StikDebug) or"
+                        " re-sign in Settings → Signing → Re-sign Apps Inside"
+                        " This App.";
+            }
+        } else if (detail && [detail containsString:@"not a mach-o"]) {
+            hint = @" The app wasn't converted to a loadable library."
+                    " Try removing and re-adding it.";
+        }
         return jg_fail(err, errLen, -2,
                        [NSString stringWithFormat:@"Can't load: %@.%@", detail, hint]);
     }

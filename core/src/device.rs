@@ -1,7 +1,7 @@
 //! Talking to the iPhone/iPad: over the loopback VPN with a pairing file
 //! (on-device) or over USB through usbmuxd (Linux bootstrap).
 
-use std::{future::Future, net::IpAddr, path::Path, pin::Pin};
+use std::{future::Future, net::IpAddr, path::Path, pin::Pin, time::Duration};
 
 use idevice::{
     Idevice, IdeviceError, IdeviceService,
@@ -17,6 +17,15 @@ use idevice::{
 use crate::model::{DeviceInfo, Target};
 
 const LABEL: &str = "JapuszkoInjector";
+
+/// How long to wait for a single lockdownd connection attempt.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// How many times to retry the lockdownd connection before giving up.
+const CONNECT_RETRIES: u32 = 3;
+
+/// Delay between retry attempts (doubles each time).
+const RETRY_BASE_DELAY: Duration = Duration::from_millis(500);
 
 /// Type-erased provider so the engine doesn't care how the device is reached.
 #[derive(Debug)]
@@ -88,6 +97,17 @@ pub fn explain(err: &str) -> String {
             "Can't reach the device through the loopback VPN. Turn on LocalDevVPN \
              (or StosVPN) and make sure Wi-Fi or mobile data is on. ({err})"
         )
+    } else if lower.contains("socket io")
+        || lower.contains("broken pipe")
+        || lower.contains("reset by peer")
+        || lower.contains("connection abort")
+    {
+        format!(
+            "The lockdown connection dropped (socket IO error). The VPN tunnel may \
+             be unstable -- try toggling LocalDevVPN off and on, or check that \
+             your Wi-Fi connection is stable. If this keeps happening, re-import \
+             the pairing file. ({err})"
+        )
     } else if lower.contains("invalidhostid") || lower.contains("pairing") {
         format!(
             "The device rejected the pairing file. It may be from a different \
@@ -99,18 +119,64 @@ pub fn explain(err: &str) -> String {
     }
 }
 
+/// Returns whether an error string looks transient (worth retrying).
+fn is_transient(err: &str) -> bool {
+    let lower = err.to_lowercase();
+    lower.contains("socket io")
+        || lower.contains("broken pipe")
+        || lower.contains("reset by peer")
+        || lower.contains("connection abort")
+        || lower.contains("timed out")
+        || lower.contains("connection refused")
+}
+
 async fn lockdown_session(p: &AnyProvider) -> Result<LockdownClient, String> {
-    let mut ld = LockdownClient::connect(p)
-        .await
-        .map_err(|e| explain(&e.to_string()))?;
-    let pf = p
-        .get_pairing_file()
-        .await
-        .map_err(|e| explain(&e.to_string()))?;
-    ld.start_session(&pf)
-        .await
-        .map_err(|e| explain(&e.to_string()))?;
-    Ok(ld)
+    let mut last_err = String::new();
+    for attempt in 0..CONNECT_RETRIES {
+        if attempt > 0 {
+            let delay = RETRY_BASE_DELAY * 2u32.saturating_pow(attempt - 1);
+            tracing::info!(
+                "lockdown: retry {attempt}/{CONNECT_RETRIES} after {}ms",
+                delay.as_millis()
+            );
+            tokio::time::sleep(delay).await;
+        }
+
+        // Wrap each connection attempt in a timeout so we don't hang
+        // indefinitely on a half-open VPN tunnel.
+        let result = tokio::time::timeout(CONNECT_TIMEOUT, async {
+            let mut ld = LockdownClient::connect(p)
+                .await
+                .map_err(|e| explain(&e.to_string()))?;
+            let pf = p
+                .get_pairing_file()
+                .await
+                .map_err(|e| explain(&e.to_string()))?;
+            ld.start_session(&pf)
+                .await
+                .map_err(|e| explain(&e.to_string()))?;
+            Ok::<_, String>(ld)
+        })
+        .await;
+
+        match result {
+            Ok(Ok(ld)) => return Ok(ld),
+            Ok(Err(e)) => {
+                last_err = e;
+                if !is_transient(&last_err) {
+                    // Non-transient error (e.g. bad pairing file) -- stop retrying.
+                    return Err(last_err);
+                }
+            }
+            Err(_elapsed) => {
+                last_err = explain("Connection to lockdownd timed out");
+            }
+        }
+    }
+
+    Err(format!(
+        "{last_err} (failed after {CONNECT_RETRIES} attempts)"
+    ))
 }
 
 pub async fn info(p: &AnyProvider) -> Result<DeviceInfo, String> {
